@@ -47,14 +47,31 @@ model = init_chat_model(
 )
 
 
+
+from decimal import Decimal, ROUND_HALF_UP
+from langchain.tools import tool
+import requests
+import os
+
+
 @tool
-def get_usd2krw_rate() -> str:
-    """Frankfurter API를 사용하여 USD/KRW 최신 환율을 조회합니다."""
+def get_usd2krw_rate(amount: float = 1.0) -> str:
+    """
+    Frankfurter API로 최신 USD/KRW 환율을 조회하고
+    입력받은 달러 금액을 원화로 환산합니다.
+
+    Args:
+        amount: 원화로 환산할 미국 달러 금액.
+                금액이 없으면 기본값은 1달러입니다.
+    """
 
     url = os.getenv("FRANKFURTER_API_URL")
 
     if not url:
-        return "FRANKFURTER_API_URL 환경변수가 없습니다."
+        return "환율 API URL이 설정되지 않았습니다."
+
+    if not 0 <= amount <= 1e12:
+        return "올바른 달러 금액을 입력해 주세요."
 
     try:
         response = requests.get(
@@ -66,12 +83,24 @@ def get_usd2krw_rate() -> str:
 
         data = response.json()
 
-        rate = float(data["rate"])
+        # 실제 환율 및 기준일
+        rate = Decimal(str(data["rate"]))
         rate_date = data["date"]
 
+        # 달러 금액 × 환율
+        converted = Decimal(str(amount)) * rate
+
+        # 원 단위 반올림
+        converted = converted.quantize(
+            Decimal("1"),
+            rounding=ROUND_HALF_UP
+        )
+
         return (
-            f"{rate_date} 기준 "
-            f"1달러당 {rate:,.2f}원입니다."
+            f"환율 기준일: {rate_date}\n"
+            f"1달러 = {rate:,.2f}원\n"
+            f"{amount:g}달러 = {converted:,.0f}원\n"
+            f"출처: Frankfurter Exchange Rates API"
         )
 
     except requests.exceptions.RequestException as e:
@@ -84,28 +113,25 @@ agent = create_agent(
     model=model,
     tools=[get_usd2krw_rate],
     system_prompt="""
-    당신은 USD/KRW 최신 환율 조회 전용 챗봇입니다.
+    당신은 USD/KRW 환율 조회 및 환전 계산 챗봇입니다.
 
     규칙:
-    1. 사용자가 달러/원 환율을 질문하면
-       반드시 get_usd2krw_rate 도구를 호출하세요.
+    1. 달러 환율 또는 달러를 원화로 환산하는 질문에는
+       반드시 get_usd2krw_rate 도구를 사용하세요.
 
-    2. 도구가 반환한 실제 환율과 기준일만 사용하세요.
+    2. 사용자가 금액을 입력하면 amount 인자로 전달하세요.
+       예: "100달러는 몇 원?" -> amount=100
 
-    3. 환율을 직접 추측하거나 만들어내지 마세요.
+    3. 금액 없이 환율만 질문하면 amount=1로 호출하세요.
 
-    4. 웹 검색을 사용하지 마세요.
+    4. 도구가 반환한 실제 환율, 환전 결과, 기준일을
+       모두 사용하세요.
 
-    5. 다른 통화 환율, 환전 계산,
-       과거 환율 등은 지원하지 않습니다.
+    5. 환율이나 환전 금액을 임의로 생성하지 마세요.
 
-    6. 환율 조회 이외의 질문에는
-       "USD/KRW 최신 환율 조회만 지원합니다."
-       라고 답변하세요.
+    6. 환율 조회와 USD/KRW 환전 계산만 지원합니다.
 
-    7. API 호출에 실패하면
-       환율을 임의로 생성하지 말고
-       조회 실패 사실을 안내하세요.
+    7. API 호출에 실패하면 실패 사실만 알려주세요.
     """
 )
 
